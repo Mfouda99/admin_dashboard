@@ -20,7 +20,7 @@ export default defineConfig({
 
       // Local Django tasks API
       "/tasks-api": {
-        target: "http://127.0.0.1:8001",
+        target: "http://127.0.0.1:8003",
         changeOrigin: true,
       },
     },
