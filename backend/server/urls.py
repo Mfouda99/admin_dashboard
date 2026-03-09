@@ -15,6 +15,7 @@ urlpatterns = [
     path("auth/", include("accounts.urls")),
 
     # accounts API (evidence endpoints)
+    path("auth/", include("accounts.urls")),
     path("api/accounts/", include("accounts.urls")),
 
     # JWT authentication
