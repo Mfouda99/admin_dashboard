@@ -5,7 +5,7 @@ import { AuthContext } from "../context/AuthContext";
 import loginLogo from "../assets/logo.webp";
 import loginBg from "../assets/login-logo.png";
 
-const API_ORIGIN = (import.meta as any).env?.VITE_API_ORIGIN?.toString().trim() || "/tasks-api";
+const API_ORIGIN = (import.meta as any).env?.VITE_API_ORIGIN?.toString().trim() || "";
 
 export default function Login() {
   const nav = useNavigate();

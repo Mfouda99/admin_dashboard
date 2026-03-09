@@ -30,13 +30,13 @@ type TodoListProps = {
 
 const API_ORIGIN =
   (import.meta as any).env?.VITE_API_ORIGIN?.toString().trim() ||
-  "/tasks-api";
+  "";
 
 async function refreshAccessToken(): Promise<string> {
   const refresh = localStorage.getItem("refresh_token");
   if (!refresh) throw new Error("Session expired, please login again");
 
-  const res = await fetch(`${API_ORIGIN}/tasks-api/api/token/refresh/`, {
+  const res = await fetch(`${API_ORIGIN}/api/token/refresh/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh }),
@@ -91,9 +91,9 @@ async function http<T>(url: string, opts?: RequestInit): Promise<T> {
 
   // 2) if token expired, refresh and retry once
   if (res.status === 401) {
-  access = await refreshAccessToken();
-  ({ res, text, json } = await doFetch(access));
-}
+    access = await refreshAccessToken();
+    ({ res, text, json } = await doFetch(access));
+  }
 
   if (!res.ok) {
     throw new Error(json?.detail || json?.message || text || `Request failed (${res.status})`);
@@ -138,12 +138,12 @@ export default function TodoList({ coachId, viewerRole = "coach" }: TodoListProp
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // ✅ if not QA/Admin hide Attendance tasks
+  //  if not QA/Admin hide Attendance tasks
   const shouldHideAttendance = viewerRole !== "qa" && viewerRole !== "admin";
 
-  // ✅ Add trailing slashes (important for Django/DRF)
-  const LIST_URL = `/tasks-api/coaches/${coachId}/tasks/`;
-  const DETAIL_URL = (taskId: string) => `/tasks-api/coaches/${coachId}/tasks/${taskId}/`;
+  //  Add trailing slashes (important for Django/DRF)
+  const LIST_URL = `/coaches/${coachId}/tasks/`;
+  const DETAIL_URL = (taskId: string) => `/coaches/${coachId}/tasks/${taskId}/`;
 
   useEffect(() => {
     let cancelled = false;
