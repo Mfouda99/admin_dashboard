@@ -32,83 +32,61 @@ export default function Login() {
   );
 
   async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setErr(null);
-    setLoading(true);
+  e.preventDefault();
+  setErr(null);
+  setLoading(true);
 
-    // Trim to avoid invisible trailing spaces causing 401
-    const u = username.trim();
-    const p = password.trim();
+  const u = username.trim();
+  const p = password.trim();
+
+  try {
+    const res = await fetch("/auth/login/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u, password: p }),
+    });
+
+    const text = await res.text();
+    let data: any = null;
 
     try {
-      const res = await fetch("/auth/login/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: u, password: p }),
-      });
-
-      const text = await res.text();
-      let data: any = null;
-
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch {
-        data = null;
-      }
-
-      if (!res.ok) {
-        const msg = data?.detail || text || `Login failed (${res.status})`;
-        throw new Error(msg);
-      }
-
-      if (!data?.role) {
-        throw new Error("Invalid login response");
-      }
-
-      // 1) Obtain JWT pair (access + refresh) from SimpleJWT
-      const pairRes = await fetch(`/api/token/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: u, password: p }),
-      });
-
-      const pairText = await pairRes.text();
-      let pair: any = null;
-      try {
-        pair = pairText ? JSON.parse(pairText) : null;
-      } catch {
-        pair = null;
-      }
-
-      if (!pairRes.ok || !pair?.access || !pair?.refresh) {
-        const msg = pair?.detail || pairText || `Failed to obtain tokens (${pairRes.status})`;
-        throw new Error(msg);
-      }
-
-      // 2) Store tokens
-      localStorage.setItem("access", pair.access);
-      localStorage.setItem("refresh", pair.refresh);
-
-      localStorage.setItem("token", pair.access);
-      localStorage.setItem("refresh_token", pair.refresh);
-
-      localStorage.setItem("role", data.role);
-      localStorage.setItem("coach_id", data.coach_id ?? "");
-      localStorage.setItem("username", data.username ?? u);
-
-      auth?.setUser?.({
-        username: data.username ?? u,
-        role: data.role,
-        coach_id: data.coach_id ?? null,
-      });
-
-      nav("/", { replace: true });
-    } catch (e: any) {
-      setErr(e?.message || "Login failed");
-    } finally {
-      setLoading(false);
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
     }
+
+    if (!res.ok) {
+      const msg = data?.detail || text || `Login failed (${res.status})`;
+      throw new Error(msg);
+    }
+
+    if (!data?.role || !data?.access || !data?.refresh) {
+      throw new Error("Invalid login response");
+    }
+
+    localStorage.setItem("access", data.access);
+    localStorage.setItem("refresh", data.refresh);
+
+    localStorage.setItem("token", data.access);
+    localStorage.setItem("refresh_token", data.refresh);
+
+    localStorage.setItem("role", data.role);
+    localStorage.setItem("coach_id", data.coach_id ?? "");
+    localStorage.setItem("username", data.username ?? u);
+
+    auth?.setUser?.({
+      username: data.username ?? u,
+      role: data.role,
+      coach_id: data.coach_id ?? null,
+    });
+
+    nav("/", { replace: true });
+  } catch (e: any) {
+    setErr(e?.message || "Login failed");
+  } finally {
+    setLoading(false);
   }
+}
 
   return (
     <div className="fixed inset-0 flex bg-[var(--color16)]">
