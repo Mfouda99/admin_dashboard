@@ -1,6 +1,6 @@
 const API_ORIGIN =
-  (import.meta as any).env?.VITE_API_ORIGIN?.toString().trim() ||
-  "http://127.0.0.1:8000";
+  ((import.meta as any).env?.VITE_API_ORIGIN)?.toString().trim() ||
+  "";
 
 function getAccess() {
   return localStorage.getItem("access") || localStorage.getItem("token") || "";
