@@ -36,7 +36,7 @@ async function refreshAccessToken(): Promise<string> {
   const refresh = localStorage.getItem("refresh_token");
   if (!refresh) throw new Error("Session expired, please login again");
 
-  const res = await fetch(`${API_ORIGIN}/api/token/refresh/`, {
+  const res = await fetch(`/api/token/refresh/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh }),
@@ -142,9 +142,9 @@ export default function TodoList({ coachId, viewerRole = "coach" }: TodoListProp
   const shouldHideAttendance = viewerRole !== "qa" && viewerRole !== "admin";
 
   //  Add trailing slashes (important for Django/DRF)
-  const LIST_URL = `/coaches/${coachId}/tasks/`;
-  const DETAIL_URL = (taskId: string) => `/coaches/${coachId}/tasks/${taskId}/`;
-
+  const LIST_URL = `/tasks-api/coaches/${coachId}/tasks/`;
+  const DETAIL_URL = (taskId: string) => `/tasks-api/coaches/${coachId}/tasks/${taskId}/`;
+  
   useEffect(() => {
     let cancelled = false;
 

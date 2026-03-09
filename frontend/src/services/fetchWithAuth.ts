@@ -15,7 +15,7 @@ async function refreshAccessToken() {
   const refresh = getRefresh();
   if (!refresh) throw new Error("Missing refresh token");
 
-  const res = await fetch(`${API_BASE}/api/token/refresh/`, {
+  const res = await fetch(`${API_ORIGIN}/api/token/refresh/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh }),

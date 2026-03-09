@@ -66,7 +66,7 @@ export default function Login() {
       }
 
       // 1) Obtain JWT pair (access + refresh) from SimpleJWT
-      const pairRes = await fetch(`${API_ORIGIN}/tasks-api/api/token/`, {
+      const pairRes = await fetch(`/api/token/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: u, password: p }),
