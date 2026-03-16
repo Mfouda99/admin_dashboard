@@ -2,9 +2,9 @@
 Google Sheets Evidence Loading
 Fetches student components and evidence from Google Sheets
 """
-import os
 import json
 import time
+import os
 from pathlib import Path
 
 from django.conf import settings
@@ -16,6 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import requests
 
 
 # Spreadsheet ID from the URL
@@ -33,6 +34,155 @@ GROUP_SHEET_MAPPING = {
     "ME": "ME",    # ME maps to ME sheet  
     "PDF": "PDF",  # PDF maps to PDF sheet
 }
+
+PROGRAM_TABS = ["PCP", "PCP-fanar", "ME", "MM", "MRE"]
+
+PROGRAM_WEBHOOK_ENV = {
+    "PCP": "N8N_WEBHOOK_URL_PCP",
+    "PCP-FANAR": "N8N_WEBHOOK_URL_PCP_FANAR",
+    "ME": "N8N_WEBHOOK_URL_ME",
+    "MM": "N8N_WEBHOOK_URL_MM",
+    "MRE": "N8N_WEBHOOK_URL_MRE",
+}
+
+PROGRAM_OUTPUT_SHEET_ENV = {
+    "PCP": "OUTPUT_SHEET_PCP",
+    "PCP-FANAR": "OUTPUT_SHEET_PCP_FANAR",
+    "ME": "OUTPUT_SHEET_ME",
+    "MM": "OUTPUT_SHEET_MM",
+    "MRE": "OUTPUT_SHEET_MRE",
+}
+
+
+def normalize_program(value):
+    """Normalize program/group values to a canonical label."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    low = raw.lower().replace("_", "-").replace(" ", "-")
+    if low in {"pcp-fanar", "pcpfanar"}:
+        return "PCP-fanar"
+    if low == "pcp":
+        return "PCP"
+    if low == "me":
+        return "ME"
+    if low == "mm":
+        return "MM"
+    if low == "mre":
+        return "MRE"
+
+    return raw
+
+
+def get_program_webhook_url(program):
+    """Resolve webhook URL from environment based on student program."""
+    canonical = normalize_program(program)
+    key = canonical.upper()
+    env_name = PROGRAM_WEBHOOK_ENV.get(key)
+
+    if env_name:
+        return os.getenv(env_name) or None
+
+    # Backward-compatible fallback.
+    return os.getenv("N8N_WEBHOOK_URL") or None
+
+
+def get_output_sheet_name(program):
+    """Resolve output sheet name from environment based on student program."""
+    canonical = normalize_program(program)
+    key = canonical.upper()
+    env_name = PROGRAM_OUTPUT_SHEET_ENV.get(key)
+
+    if env_name:
+        sheet = os.getenv(env_name)
+        if sheet:
+            return sheet
+
+    if canonical:
+        return f"{canonical} output"
+
+    return ""
+
+
+def find_marking_report_in_output_sheet(service, spreadsheet_id, program, evidence_id):
+    """Check output sheet and return marking report for evidence_id if ready."""
+    output_sheet = get_output_sheet_name(program)
+    if not output_sheet:
+        raise ValueError(f"Output sheet not configured for program: {program}")
+
+    output_range = f"'{output_sheet}'!A:J"
+    output_result = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=output_range
+    ).execute()
+
+    output_rows = output_result.get('values', [])
+    if len(output_rows) < 2:
+        return None
+
+    for row in output_rows[1:]:
+        if len(row) <= 4:
+            continue
+
+        row_evidence_id = str(row[4]).strip()
+        if row_evidence_id != str(evidence_id).strip():
+            continue
+
+        report_text = row[9] if len(row) > 9 else ''
+        if not str(report_text).strip():
+            return None
+
+        return {
+            'evidence_id': str(evidence_id),
+            'program': normalize_program(program),
+            'output_sheet': output_sheet,
+            'marking_report': report_text,
+            'raw_output_row': row,
+        }
+
+    return None
+
+
+def find_student_in_program_tabs(service, spreadsheet_id, student_email):
+    """Search program tabs by email in column D (index 3)."""
+    if not student_email:
+        return None
+
+    search_email = str(student_email).lower().strip()
+    sheets = get_sheets_list(service, spreadsheet_id)
+    sheet_by_lower = {s["title"].lower(): s for s in sheets}
+
+    for sheet_name in PROGRAM_TABS:
+        sheet = sheet_by_lower.get(sheet_name.lower())
+        if not sheet:
+            continue
+
+        rows = get_sheet_data(service, spreadsheet_id, f"'{sheet['title']}'!A:Z")
+        if not rows or len(rows) < 2:
+            continue
+
+        for row_index, row in enumerate(rows[1:], start=1):
+            if len(row) <= 3:
+                continue
+
+            row_email = str(row[3]).lower().strip()
+            if row_email != search_email:
+                continue
+
+            return {
+                "student_data": {
+                    "row": row,
+                    "row_index": row_index,
+                    "sheet_title": sheet["title"],
+                },
+                "group": normalize_program(sheet["title"]),
+                "target_sheet": sheet["title"],
+                "student_email": row[3] if len(row) > 3 else "",
+                "student_id": row[0] if len(row) > 0 else "",
+            }
+
+    return None
 
 
 def get_service_account_path():
@@ -109,6 +259,12 @@ def find_student_in_sheets(service, spreadsheet_id, student_email=None, student_
     # Normalize search terms
     search_email = student_email.lower().strip() if student_email else None
     search_id = str(student_id).strip() if student_id else None
+
+    # New flow: first search student email in program tabs using column D.
+    if search_email:
+        program_match = find_student_in_program_tabs(service, spreadsheet_id, search_email)
+        if program_match:
+            return program_match
     
     # Get all sheets
     sheets = get_sheets_list(service, spreadsheet_id)
@@ -206,11 +362,17 @@ def find_student_in_sheets(service, spreadsheet_id, student_email=None, student_
             f"Available sheets: {', '.join(available_sheets[:10])}"
         )
     
+    fallback_email = ''
+    if len(found_data['row']) > 3 and '@' in str(found_data['row'][3]):
+        fallback_email = found_data['row'][3]
+    elif len(found_data['row']) > 1:
+        fallback_email = found_data['row'][1]
+
     return {
         'student_data': found_data,
         'group': group,
         'target_sheet': target_sheet_name,
-        'student_email': found_data['row'][1] if len(found_data['row']) > 1 else '',
+        'student_email': fallback_email,
         'student_id': found_data['row'][0] if len(found_data['row']) > 0 else ''
     }
 
@@ -226,91 +388,73 @@ def get_student_components(service, spreadsheet_id, student_email=None, student_
     target_sheet = student_info['target_sheet']
     student_email_found = student_info['student_email']
     student_id_found = student_info['student_id']
-    
-    # Fetch target sheet data
+    program = normalize_program(student_info['group'] or target_sheet)
+
+    # Primary flow: student located by email in column D from program tabs.
+    # Reflect row data from column E directly.
+    matched_row = student_info.get('student_data', {}).get('row') or []
+    if student_email_found and matched_row:
+        evidence_col_e = matched_row[4] if len(matched_row) > 4 else ''
+
+        if not str(evidence_col_e).strip():
+            raise ValueError("No evidence data found in column E for this student")
+
+        evidence_parsed = evidence_col_e
+        if isinstance(evidence_col_e, str):
+            try:
+                evidence_parsed = json.loads(evidence_col_e)
+            except:
+                evidence_parsed = evidence_col_e
+
+        return {
+            'student_id': student_id_found,
+            'student_email': student_email_found,
+            'group': program,
+            'program': program,
+            'target_sheet': target_sheet,
+            'components': evidence_parsed if isinstance(evidence_parsed, list) else [],
+            'evidence': evidence_col_e,
+            'raw_component_name': None,
+            'source_column': 'E'
+        }
+
+    # Fallback flow (legacy sheets): read target sheet and try to match row.
     range_name = f"{target_sheet}!A:Z"
     rows = get_sheet_data(service, spreadsheet_id, range_name)
-    
     if not rows:
         raise ValueError(f"No data in target sheet: {target_sheet}")
-    
-    # Detect component column index (search for 'component' in header)
-    component_index = None
-    evidence_index = None
-    
-    if rows and len(rows) > 0:
-        header_row = rows[0]
-        for idx, cell in enumerate(header_row):
-            if isinstance(cell, str) and 'component' in cell.lower():
-                component_index = idx
-            if isinstance(cell, str) and 'evidence' in cell.lower():
-                evidence_index = idx
-    
-    if component_index is None:
-        component_index = 3  # Default fallback
-    
-    if evidence_index is None:
-        evidence_index = 4  # Default fallback
-    
-    # Determine starting row (skip header if it contains 'component')
-    start_row = 0
-    if rows and len(rows) > 0 and component_index < len(rows[0]):
-        if isinstance(rows[0][component_index], str) and 'component' in rows[0][component_index].lower():
-            start_row = 1
-    
-    # Find the student's row in target sheet
-    component_name = None
+
     evidence_data = None
-    
-    for i in range(start_row, len(rows)):
-        row = rows[i]
-        
+    for row in rows[1:]:
         if len(row) < 2:
             continue
-        
+
         row_id = row[0] if len(row) > 0 else ''
-        row_email = row[1] if len(row) > 1 else ''
-        
-        # Match student
+        row_email_col_d = row[3] if len(row) > 3 else ''
+
         match = False
-        if student_email_found and isinstance(row_email, str) and row_email.lower().strip() == student_email_found.lower().strip():
-            match = True
-        elif student_id_found and str(row_id).strip() == str(student_id_found).strip():
-            match = True
-        
+        if student_email_found and isinstance(row_email_col_d, str):
+            match = row_email_col_d.lower().strip() == student_email_found.lower().strip()
+        elif student_id_found:
+            match = str(row_id).strip() == str(student_id_found).strip()
+
         if match:
-            # Get component name
-            if component_index < len(row):
-                component_name = row[component_index]
-            
-            # Get evidence data
-            if evidence_index < len(row):
-                evidence_data = row[evidence_index]
-            
+            evidence_data = row[4] if len(row) > 4 else ''
             break
-    
-    if not component_name:
-        raise ValueError("Component data not found for student in target sheet")
-    
-    # Parse component JSON if it's a JSON string
-    components_parsed = None
-    if isinstance(component_name, str):
-        try:
-            components_parsed = json.loads(component_name)
-        except:
-            # Not JSON, keep as string
-            components_parsed = component_name
-    else:
-        components_parsed = component_name
-    
+
+    if not str(evidence_data or '').strip():
+        raise ValueError("No evidence data found in column E for this student")
+
     return {
         'student_id': student_id_found,
         'student_email': student_email_found,
-        'group': student_info['group'],
+        'group': program,
+        'program': program,
         'target_sheet': target_sheet,
-        'components': components_parsed,
+        'components': [],
         'evidence': evidence_data,
-        'raw_component_name': component_name
+        'raw_component_name': None,
+        'source_column': 'E'
     }
 
 
@@ -364,20 +508,21 @@ class GetStudentComponentsView(APIView):
 
 class MarkEvidenceView(APIView):
     """
-    API endpoint to mark evidence by submitting to processing sheet
-    and waiting for results from output sheet
+    API endpoint to mark evidence using a program-specific webhook,
+    then read the output sheet and return marking report (column J).
     """
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
         """
-        Mark evidence - submit to processing sheet and poll for results
+        Mark evidence via webhook and poll output sheet for results
         
         Expected payload:
         {
             "student_id": "...",
             "student_email": "...",
             "group": "PCP",
+            "program": "PCP",
             "evidence_id": 15009,
             "evidence_name": "...",
             "evidence_url": "...",
@@ -392,6 +537,8 @@ class MarkEvidenceView(APIView):
         student_email = request.data.get('student_email')
         student_name = request.data.get('student_name', student_email)
         group = request.data.get('group')
+        program = request.data.get('program') or group
+        program = normalize_program(program)
         evidence_id = request.data.get('evidence_id')
         evidence_name = request.data.get('evidence_name')
         evidence_url = request.data.get('evidence_url')
@@ -401,9 +548,9 @@ class MarkEvidenceView(APIView):
         components = request.data.get('components', [])
         
         # Validate required fields
-        if not all([student_id, group, evidence_id, component_id]):
+        if not all([program, evidence_id]):
             return Response(
-                {'error': 'Missing required fields: student_id, group, evidence_id, component_id'},
+                {'error': 'Missing required fields: program/group, evidence_id'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -433,40 +580,39 @@ class MarkEvidenceView(APIView):
                 except:
                     pass
             
-            # Get processing sheet name
-            processing_sheet = f"{group} processing sheet"
-            
-            # Prepare row data for processing sheet
-            # Columns: UserId, UserName, ComponentId, ComponentName, EvidenceId, 
-            #          EvidenceName, EvidenceUrl, EvidenceStatus, EvidenceCreatedDate
-            row_data = [
-                str(student_id),
-                str(student_name),
-                str(component_id),
-                str(component_name),
-                str(evidence_id),
-                str(evidence_name),
-                str(evidence_url),
-                str(evidence_status),
-                str(evidence_created_date),
-            ]
-            
-            # Append to processing sheet
-            append_range = f"'{processing_sheet}'!A:I"
-            body = {
-                'values': [row_data]
+            webhook_url = get_program_webhook_url(program)
+            if not webhook_url:
+                return Response(
+                    {'error': f'Webhook URL not configured for program: {program}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            webhook_payload = {
+                'student_id': student_id,
+                'student_email': student_email,
+                'student_name': student_name,
+                'group': group,
+                'program': program,
+                'evidence_id': evidence_id,
+                'evidence_name': evidence_name,
+                'evidence_url': evidence_url,
+                'evidence_status': evidence_status,
+                'evidence_created_date': evidence_created_date,
+                'component_id': component_id,
+                'component_name': component_name,
+                'components': components,
             }
-            
-            result = service.spreadsheets().values().append(
-                spreadsheetId=SPREADSHEET_ID,
-                range=append_range,
-                valueInputOption='RAW',
-                insertDataOption='INSERT_ROWS',
-                body=body
-            ).execute()
-            
-            # Poll output sheet for results
-            output_sheet = f"{group} Output"
+
+            webhook_response = requests.post(webhook_url, json=webhook_payload, timeout=20)
+            webhook_response.raise_for_status()
+
+            output_sheet = get_output_sheet_name(program)
+            if not output_sheet:
+                return Response(
+                    {'error': f'Output sheet not configured for program: {program}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             max_polls = 20  # Poll for up to 60 seconds (20 * 3s)
             poll_interval = 3  # seconds
             
@@ -476,40 +622,12 @@ class MarkEvidenceView(APIView):
                 
                 # Read output sheet
                 try:
-                    output_range = f"'{output_sheet}'!A:Z"
-                    output_result = service.spreadsheets().values().get(
-                        spreadsheetId=SPREADSHEET_ID,
-                        range=output_range
-                    ).execute()
-                    
-                    output_rows = output_result.get('values', [])
-                    if not output_rows:
-                        continue
-                    
-                    # First row is headers
-                    headers = output_rows[0] if output_rows else []
-                    
-                    # Find evidence_id column (usually column E - EvidenceId)
-                    evidence_id_col = -1
-                    for idx, header in enumerate(headers):
-                        if header.lower() in ['evidenceid', 'evidence_id', 'evidence id']:
-                            evidence_id_col = idx
-                            break
-                    
-                    if evidence_id_col == -1:
-                        continue
-                    
-                    # Search for matching evidence_id in output sheet
-                    for row in output_rows[1:]:  # Skip header row
-                        if len(row) > evidence_id_col:
-                            row_evidence_id = str(row[evidence_id_col])
-                            if row_evidence_id == str(evidence_id):
-                                # Found result - build result object
-                                marking_result = {}
-                                for idx, header in enumerate(headers):
-                                    if idx < len(row):
-                                        marking_result[header] = row[idx]
-                                break
+                    marking_result = find_marking_report_in_output_sheet(
+                        service,
+                        SPREADSHEET_ID,
+                        program,
+                        evidence_id,
+                    )
                     
                     if marking_result:
                         break
@@ -530,10 +648,10 @@ class MarkEvidenceView(APIView):
             else:
                 return Response({
                     'success': False,
-                    'message': 'Evidence submitted but marking result not ready yet. Please check later.',
+                    'message': 'Evidence submitted to webhook but marking result is not ready yet. Please check later.',
                     'data': {
                         'submitted': True,
-                        'processing_sheet': processing_sheet,
+                        'program': program,
                         'output_sheet': output_sheet,
                         'evidence_id': evidence_id
                     }
@@ -544,8 +662,56 @@ class MarkEvidenceView(APIView):
                 {'error': f'Google Sheets API error: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        except requests.RequestException as e:
+            return Response(
+                {'error': f'Webhook request failed: {str(e)}'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
         except Exception as e:
             return Response(
                 {'error': f'Failed to mark evidence: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class PollMarkingReportView(APIView):
+    """Poll output sheet for an evidence marking report."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        evidence_id = str(request.GET.get('evidence_id', '')).strip()
+        program = request.GET.get('program') or request.GET.get('group')
+        program = normalize_program(program)
+
+        if not evidence_id or not program:
+            return Response(
+                {'error': 'evidence_id and program are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            service = get_sheets_service()
+            result = find_marking_report_in_output_sheet(
+                service,
+                SPREADSHEET_ID,
+                program,
+                evidence_id,
+            )
+
+            if result:
+                return Response({'found': True, 'data': result})
+
+            return Response({'found': False, 'message': 'Report not ready yet'})
+
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except HttpError as e:
+            return Response(
+                {'error': f'Google Sheets API error: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to poll marking report: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

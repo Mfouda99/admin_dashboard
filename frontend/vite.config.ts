@@ -4,6 +4,7 @@ import path from "path";
 
 export default defineConfig({
   plugins: [react()],
+  base: "/",
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
@@ -11,6 +12,12 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // Local Django accounts API (evidence marking) - MUST BE FIRST
+      "/api/accounts": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+
       // main API (coaches analytics, attendance data)
       // Using local API server - make sure it's running on port 5055
       "/api": {

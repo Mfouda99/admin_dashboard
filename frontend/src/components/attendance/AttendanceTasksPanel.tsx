@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+import { fetchWithAuth } from "@/services/fetchWithAuth";
+
 type Props = {
   coachId: number;
   viewerRole?: "qa" | "coach";
@@ -26,17 +28,8 @@ type EvidenceItem = {
   reviewed: boolean;
 };
 
-function authHeaders(extra?: Record<string, string>) {
-  const token = localStorage.getItem("token");
-  return {
-    ...(extra ?? {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
 async function fetchCoachTasks(coachId: number): Promise<Task[]> {
-  const res = await fetch(`/tasks-api/coaches/${coachId}/tasks`, {
-    headers: authHeaders(),
+  const res = await fetchWithAuth(`/coaches/${coachId}/tasks/`, {
   });
 
   if (!res.ok) {
@@ -50,11 +43,11 @@ async function fetchCoachTasks(coachId: number): Promise<Task[]> {
 
 // PATCH reviewed flag 
 async function patchTaskReviewed(coachId: number, taskId: string, reviewed: boolean) {
-  const res = await fetch(`/tasks-api/coaches/${coachId}/tasks/${taskId}/`, {
+  const res = await fetchWithAuth(`/coaches/${coachId}/tasks/${taskId}/`, {
     method: "PATCH",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-    evidence: { reviewed },
+      evidence: { reviewed },
     }),
   });
 
@@ -70,9 +63,8 @@ async function patchTaskReviewed(coachId: number, taskId: string, reviewed: bool
 
 //DELETE task 
 async function deleteTask(coachId: number, taskId: string) {
-  const res = await fetch(`/tasks-api/coaches/${coachId}/tasks/${taskId}/`, {
+  const res = await fetchWithAuth(`/coaches/${coachId}/tasks/${taskId}/`, {
     method: "DELETE",
-    headers: authHeaders(),
   });
 
   const text = await res.text().catch(() => "");
@@ -121,13 +113,12 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
     };
   }, [coachId]);
 
-  const API_ORIGIN = (import.meta as any)?.env?.VITE_API_ORIGIN || "http://127.0.0.1:8000";
+  const API_ORIGIN = (import.meta as any)?.env?.VITE_API_ORIGIN || "";
 
   const toAbsoluteUrl = (u: string) => {
     if (!u) return "";
-    if (u.startsWith("http://") || u.startsWith("https://")) return u;
-    if (u.startsWith("/")) return `${API_ORIGIN}${u}`;
-    return `${API_ORIGIN}/${u}`;
+    if (u.startsWith("http")) return u;
+    return `/tasks-api${u}`;
   };
 
   const evidenceItems = useMemo<EvidenceItem[]>(() => {
@@ -214,7 +205,7 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
   }
 
   return (
-      <div className="bg-white rounded-2xl shadow-sm p-4 h-full min-h-0 flex flex-col">
+    <div className="bg-white rounded-2xl shadow-sm p-4 h-full min-h-0 flex flex-col">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-base font-semibold text-[#241453]">Evidence (Attendance)</h3>
@@ -246,7 +237,7 @@ export default function AttendanceTasksPanel({ coachId, viewerRole = "qa" }: Pro
       )}
 
       {!loading && evidenceItems.length > 0 && (
-  <div className="mt-3 space-y-2 flex-1 min-h-0 overflow-y-auto custom-scroll pr-1">
+        <div className="mt-3 space-y-2 flex-1 min-h-0 overflow-y-auto custom-scroll pr-1">
           {evidenceItems.map((x) => {
             const isBusy = busyId === x.taskId;
 
