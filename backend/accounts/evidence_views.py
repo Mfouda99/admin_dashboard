@@ -144,12 +144,14 @@ def find_marking_report_in_output_sheet(service, spreadsheet_id, program, eviden
     return None
 
 
-def find_student_in_program_tabs(service, spreadsheet_id, student_email):
-    """Search program tabs by email in column D (index 3)."""
-    if not student_email:
+def find_student_in_program_tabs(service, spreadsheet_id, student_email=None, student_id=None):
+    """Search program tabs by email in column D (index 3) or by ID in column A (index 0)."""
+    if not student_email and not student_id:
         return None
 
-    search_email = str(student_email).lower().strip()
+    search_email = str(student_email).lower().strip() if student_email else None
+    search_id = str(student_id).strip() if student_id else None
+
     sheets = get_sheets_list(service, spreadsheet_id)
     sheet_by_lower = {s["title"].lower(): s for s in sheets}
 
@@ -163,11 +165,22 @@ def find_student_in_program_tabs(service, spreadsheet_id, student_email):
             continue
 
         for row_index, row in enumerate(rows[1:], start=1):
-            if len(row) <= 3:
+            if len(row) <= 0:
                 continue
 
-            row_email = str(row[3]).lower().strip()
-            if row_email != search_email:
+            match = False
+            
+            if search_email and len(row) > 3:
+                row_email = str(row[3]).lower().strip()
+                if row_email == search_email:
+                    match = True
+            
+            if not match and search_id and len(row) > 0:
+                row_id = str(row[0]).strip()
+                if row_id == search_id:
+                    match = True
+
+            if not match:
                 continue
 
             return {
@@ -260,9 +273,9 @@ def find_student_in_sheets(service, spreadsheet_id, student_email=None, student_
     search_email = student_email.lower().strip() if student_email else None
     search_id = str(student_id).strip() if student_id else None
 
-    # New flow: first search student email in program tabs using column D.
-    if search_email:
-        program_match = find_student_in_program_tabs(service, spreadsheet_id, search_email)
+    # New flow: first search student email or ID in program tabs.
+    if search_email or search_id:
+        program_match = find_student_in_program_tabs(service, spreadsheet_id, search_email, search_id)
         if program_match:
             return program_match
     
